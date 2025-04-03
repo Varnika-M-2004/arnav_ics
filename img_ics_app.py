@@ -8,6 +8,7 @@ import io
 import base64
 import numpy as np
 import os
+import zlib
 
 # Function to derive encryption key
 def derive_key(password: str, salt: bytes = b'static_salt'):
