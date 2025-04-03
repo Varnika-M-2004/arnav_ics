@@ -177,66 +177,56 @@ def extract_text_from_image(img):
 
 # Function to embed an image inside another using LSB
 def embed_image(cover_img, secret_img):
-    # Convert images to numpy arrays
-    cover_pixels = np.array(cover_img)
-    secret_img_resized = secret_img.copy()
-    
-    # Calculate cover capacity
-    cover_capacity = cover_pixels.size // 8  # Each byte needs 8 pixels (1 bit per pixel)
-    
-    # Convert secret image to bytes
+    # Convert cover image to numpy array (int16 to avoid overflow issues)
+    cover_pixels = np.array(cover_img, dtype=np.int16)
+    cover_capacity = cover_pixels.size * 3  # Each pixel stores 3 bits (RGB)
+
+    # Convert secret image to bytes and compress it
     secret_bytes_io = io.BytesIO()
-    secret_img_resized.save(secret_bytes_io, format="PNG")
+    secret_img.save(secret_bytes_io, format="PNG")
     secret_bytes = secret_bytes_io.getvalue()
-    
-    # Check if secret image will fit into cover image
-    # Add space for a header to store image size
-    header = f"{len(secret_bytes):08d}".encode()  # Store length as 8-digit number
-    total_bytes_needed = len(header) + len(secret_bytes)
-    
-    if total_bytes_needed > cover_capacity:
-        st.warning(f"Secret image too large! Resizing to fit within cover image.")
-        # Calculate a scale factor to resize the image
-        scale_factor = 0.9 * np.sqrt(cover_capacity / total_bytes_needed)
-        new_width = max(1, int(secret_img.width * scale_factor))
-        new_height = max(1, int(secret_img.height * scale_factor))
-        secret_img_resized = secret_img.resize((new_width, new_height), Image.LANCZOS)
-        
-        # Re-encode the resized image
-        secret_bytes_io = io.BytesIO()
-        secret_img_resized.save(secret_bytes_io, format="PNG", optimize=True)
-        secret_bytes = secret_bytes_io.getvalue()
-        
-        # Recalculate header with new size
-        header = f"{len(secret_bytes):08d}".encode()
-        total_bytes_needed = len(header) + len(secret_bytes)
-        
-        if total_bytes_needed > cover_capacity:
-            st.error("Cover image is too small even after resizing the secret image.")
-            return None
-    
-    # Combine header and data
-    data_to_hide = header + secret_bytes
-    
-    # Convert data to binary
-    binary_data = ''.join(format(byte, '08b') for byte in data_to_hide)
-    
-    # Embed binary data into cover image
+    compressed_bytes = zlib.compress(secret_bytes)  # Compress before embedding
+
+    # Convert compressed bytes to Base64 and then binary
+    secret_b64 = base64.b64encode(compressed_bytes).decode()
+    secret_bin = ''.join(format(ord(char), '08b') for char in secret_b64)
+
+    # Append EOF marker
+    eof_marker = '1111111111111110'
+    secret_bin += eof_marker
+
+    # Check if the secret image fits in the cover image
+    if len(secret_bin) > cover_capacity:
+        st.error("Secret image is too large! Resize and try again.")
+        return None
+
+    # Flatten the cover image array for easy bit embedding
     flat_cover = cover_pixels.flatten()
-    
-    # Make sure binary data doesn't exceed capacity
-    if len(binary_data) > flat_cover.size:
-        binary_data = binary_data[:flat_cover.size]
-    
-    # Embed data
-    for i in range(len(binary_data)):
-        if i < flat_cover.size:  # Safety check
-            # Clear the LSB and set it to the binary data bit
-            flat_cover[i] = (flat_cover[i] & ~1) | int(binary_data[i])
-    
-    # Reshape back to original image dimensions
-    stego_image = flat_cover.reshape(cover_pixels.shape)
-    return Image.fromarray(stego_image.astype(np.uint8))
+
+    # Debugging: Check min/max values before modifying
+    print(f"Before embedding: min={flat_cover.min()}, max={flat_cover.max()}")
+
+    # Embed the binary secret data into the LSB of the cover image
+    for i in range(len(secret_bin)):
+        old_value = flat_cover[i]
+        bit_to_embed = int(secret_bin[i])
+
+        # Embed the bit safely
+        new_value = (old_value & ~1) | bit_to_embed
+
+        # Ensure new value stays within uint8 range (0-255)
+        if new_value < 0 or new_value > 255:
+            print(f"Warning! Overflow at index {i}: {new_value}")
+            new_value = np.clip(new_value, 0, 255)  # Fix overflow
+
+        flat_cover[i] = new_value  # Assign safely
+
+    # Debugging: Check min/max values after modifying
+    print(f"After embedding: min={flat_cover.min()}, max={flat_cover.max()}")
+
+    # Reshape back to original cover image dimensions
+    stego_image = flat_cover.reshape(cover_pixels.shape).astype(np.uint8)
+    return Image.fromarray(stego_image)
 
 # Function to extract a hidden image
 def extract_image(cover_image):
