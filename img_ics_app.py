@@ -74,36 +74,59 @@ def embed_text_in_image(img, encrypted_text):
     # Convert image to RGBA if it isn't already
     if img.mode != 'RGBA':
         img = img.convert('RGBA')
-    
-    # Get image data as numpy array
-    img_array = np.array(img)
-    
-    # Prepare header (length of encrypted text as 8-byte value)
+
+    # Get image data as a NumPy array (int16 for safety)
+    img_array = np.array(img, dtype=np.int16)
+
+    # Prepare header (length of encrypted text as an 8-byte value)
     header = len(encrypted_text).to_bytes(8, byteorder='big')
     data_to_hide = header + encrypted_text
-    
-    # Convert data to binary
-    binary_data = ''.join(format(byte, '08b') for byte in data_to_hide)
-    
-    # Check if image is large enough to hold the data
+
+    # Compress data to reduce size
+    compressed_data = zlib.compress(data_to_hide)
+
+    # Convert compressed data to Base64, then to binary
+    text_b64 = base64.b64encode(compressed_data).decode()
+    binary_data = ''.join(format(ord(char), '08b') for char in text_b64)
+
+    # Append EOF marker
+    eof_marker = '1111111111111110'
+    binary_data += eof_marker
+
+    # Check if the image is large enough to hold the data
     if len(binary_data) > img_array.shape[0] * img_array.shape[1]:
         st.error("Image is too small to hold this message!")
         return None
-    
+
     # Flatten the alpha channel
     alpha_channel = img_array[:, :, 3].flatten()
-    
+
+    # Debugging: Check min/max values before modifying
+    print(f"Before embedding: min={alpha_channel.min()}, max={alpha_channel.max()}")
+
     # Embed each bit into the LSB of the alpha channel
     for i in range(len(binary_data)):
         if i < len(alpha_channel):
-            # Clear the LSB and set it to the binary data bit
-            alpha_channel[i] = (alpha_channel[i] & ~1) | int(binary_data[i])
-    
+            old_value = alpha_channel[i]
+            bit_to_embed = int(binary_data[i])
+
+            # Embed the bit safely
+            new_value = (old_value & ~1) | bit_to_embed
+
+            # Ensure new value stays within uint8 range (0-255)
+            if new_value < 0 or new_value > 255:
+                print(f"Warning! Overflow at index {i}: {new_value}")
+                new_value = np.clip(new_value, 0, 255)  # Fix overflow
+
+            alpha_channel[i] = new_value  # Assign safely
+
+    # Debugging: Check min/max values after modifying
+    print(f"After embedding: min={alpha_channel.min()}, max={alpha_channel.max()}")
+
     # Reshape alpha channel and put it back into the image
     img_array[:, :, 3] = alpha_channel.reshape(img_array.shape[0], img_array.shape[1])
-    
-    return Image.fromarray(img_array)
 
+    return Image.fromarray(img_array.astype(np.uint8))
 # Function to extract text from an image
 def extract_text_from_image(img):
     try:
